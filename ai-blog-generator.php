@@ -1,7 +1,26 @@
 <?php
 /**
  * Plugin Name: AI Blog Generator
- * Plugin URI: https://your-website.com/ai-blog-generator
+ * Plugin URI: https://your-website.c                        <table class="form-table">
+                            <tr>
+                                <th scope="row">OpenAI API Anahtarı</th>
+                                <td>
+                                    <input type="text" name="ai_blog_generator_api_key" 
+                                           value="<?php echo esc_attr(get_option('ai_blog_generator_api_key')); ?>" 
+                                           class="regular-text">
+                                    <p class="description">GPT API'si için OpenAI API anahtarınız</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th scope="row">Unsplash API Anahtarı</th>
+                                <td>
+                                    <input type="text" name="ai_blog_generator_unsplash_api_key" 
+                                           value="<?php echo esc_attr(get_option('ai_blog_generator_unsplash_api_key')); ?>" 
+                                           class="regular-text">
+                                    <p class="description">Otomatik görseller için Unsplash API anahtarınız. <a href="https://unsplash.com/developers" target="_blank">Buradan</a> ücretsiz anahtar alabilirsiniz.</p>
+                                </td>
+                            </tr>
+                        </table>-generator
  * Description: GPT-4.1 mini/nano kullanarak otomatik blog yazıları oluşturan WordPress eklentisi
  * Version: 1.0.0
  * Author: Your Name
@@ -19,6 +38,7 @@ if (!defined('ABSPATH')) {
 class AI_Blog_Generator {
     private static $instance = null;
     private $api_key = '';
+    private $unsplash_api_key = ''; // Unsplash API anahtarı için değişken
 
     public static function get_instance() {
         if (self::$instance == null) {
@@ -35,6 +55,7 @@ class AI_Blog_Generator {
         // AJAX işleyicileri
         add_action('wp_ajax_generate_blog_content', array($this, 'generate_blog_content'));
         add_action('wp_ajax_publish_blog_post', array($this, 'publish_blog_post'));
+        add_action('wp_ajax_search_featured_image', array($this, 'search_featured_image')); // Yeni AJAX handler
     }
 
     public function add_admin_menu() {
@@ -50,6 +71,7 @@ class AI_Blog_Generator {
 
     public function register_settings() {
         register_setting('ai_blog_generator_settings', 'ai_blog_generator_api_key');
+        register_setting('ai_blog_generator_settings', 'ai_blog_generator_unsplash_api_key'); // Unsplash API ayarı
     }
 
     public function enqueue_admin_scripts($hook) {
@@ -85,6 +107,14 @@ class AI_Blog_Generator {
                                            class="regular-text">
                                 </td>
                             </tr>
+                            <tr>
+                                <th scope="row">Unsplash API Anahtarı</th>
+                                <td>
+                                    <input type="text" name="ai_blog_generator_unsplash_api_key" 
+                                           value="<?php echo esc_attr(get_option('ai_blog_generator_unsplash_api_key')); ?>" 
+                                           class="regular-text">
+                                </td>
+                            </tr>
                         </table>
                         <?php submit_button(); ?>
                     </form>
@@ -92,14 +122,52 @@ class AI_Blog_Generator {
                 
                 <div class="generator-section">
                     <h2>Blog Yazısı Oluştur</h2>
-                    <div class="prompt-container">
+                    <div class="mode-selector">
+                        <label>
+                            <input type="radio" name="generation-mode" value="single" checked> Tek Blog
+                        </label>
+                        <label>
+                            <input type="radio" name="generation-mode" value="multiple"> Çoklu Blog
+                        </label>
+                    </div>
+
+                    <div id="single-mode" class="prompt-container">
                         <textarea id="blog-prompt" placeholder="Blog yazısı için konu veya prompt girin..."></textarea>
+                        <div class="image-keyword-field">
+                            <label for="image-keyword">Görsel anahtar kelimesi (boş bırakılırsa başlık kullanılır):</label>
+                            <input type="text" id="image-keyword" placeholder="Örn: doğa, teknoloji, işletme...">
+                        </div>
                         <button id="generate-blog" class="button button-primary">Blog Oluştur</button>
                     </div>
+
+                    <div id="multiple-mode" class="prompt-container" style="display: none;">
+                        <textarea id="main-topic" placeholder="Ana konuyu detaylı açıklayın..."></textarea>
+                        <textarea id="blog-topics" placeholder="Blog konularını her satıra bir tane gelecek şekilde girin...&#10;Örnek:&#10;konu1&#10;konu2&#10;konu3"></textarea>
+                        <div class="image-keyword-field">
+                            <label for="multiple-image-keyword">Görsel anahtar kelimesi (boş bırakılırsa başlık kullanılır):</label>
+                            <input type="text" id="multiple-image-keyword" placeholder="Örn: doğa, teknoloji, işletme...">
+                        </div>
+                        <button id="generate-multiple-blogs" class="button button-primary">Blogları Oluştur</button>
+                    </div>
+
                     <div id="generation-result" style="display: none;">
                         <h3>Oluşturulan İçerik</h3>
                         <div id="blog-content"></div>
-                        <button id="publish-blog" class="button button-primary">Yayınla</button>
+                        <div class="image-preview" style="display: none;">
+                            <h4>Öne Çıkan Görsel</h4>
+                            <img src="" alt="Öne Çıkan Görsel">
+                            <div class="image-attribution"></div>
+                        </div>
+                        <button id="publish-blog" class="button button-primary">
+                            Yayınla <span class="image-loading" style="display: none;">(Görsel aranıyor...)</span>
+                        </button>
+                    </div>
+
+                    <div id="generation-progress" style="display: none;">
+                        <div class="progress-bar">
+                            <div class="progress"></div>
+                        </div>
+                        <div class="progress-text">İşleniyor: <span id="current-topic"></span></div>
                     </div>
                 </div>
             </div>
@@ -234,9 +302,9 @@ ETİKETLER: [Buraya virgülle ayrılmış 5-10 adet anahtar kelime/etiket yaz]'
         $content = wp_kses_post($_POST['content']);
         $category = isset($_POST['category']) ? sanitize_text_field($_POST['category']) : '';
         $tags = isset($_POST['tags']) ? $_POST['tags'] : array();
+        $image_id = isset($_POST['image_id']) ? intval($_POST['image_id']) : 0;
 
-        if (empty($content)) {                    alert('Blog yazısı başarıyla yayınlandı!');
-
+        if (empty($content)) {
             wp_send_json_error(array('message' => 'İçerik boş olamaz.'));
         }
 
@@ -280,10 +348,157 @@ ETİKETLER: [Buraya virgülle ayrılmış 5-10 adet anahtar kelime/etiket yaz]'
             wp_set_post_tags($post_id, $tags);
         }
 
+        // Öne çıkan görsel ayarla
+        if ($image_id > 0) {
+            set_post_thumbnail($post_id, $image_id);
+        }
+
         wp_send_json_success(array(
             'message' => 'Yazı başarıyla yayınlandı.',
             'post_url' => get_permalink($post_id)
         ));
+    }
+
+    // Görsel arama fonksiyonu
+    public function search_featured_image() {
+        check_ajax_referer('ai_blog_generator_nonce', 'nonce');
+
+        if (!current_user_can('upload_files')) {
+            wp_send_json_error(array('message' => 'Dosya yükleme yetkiniz yok.'), 403);
+            return;
+        }
+
+        $query = sanitize_text_field($_POST['query']);
+        if (empty($query)) {
+            wp_send_json_error(array(
+                'message' => 'Arama sorgusu boş olamaz.', 
+                'continue_without_image' => true
+            ), 400);
+            return;
+        }
+
+        $unsplash_api_key = get_option('ai_blog_generator_unsplash_api_key');
+        if (empty($unsplash_api_key)) {
+            wp_send_json_error(array(
+                'message' => 'Unsplash API anahtarı ayarlanmamış.', 
+                'continue_without_image' => true
+            ), 400);
+            return;
+        }
+
+        try {
+            // Daha fazla görsel getirmek için per_page parametresini artırdık
+            $response = wp_remote_get('https://api.unsplash.com/search/photos?query=' . urlencode($query) . '&per_page=10', array(
+                'headers' => array(
+                    'Authorization' => 'Client-ID ' . $unsplash_api_key,
+                ),
+                'timeout' => 15,
+            ));
+
+            if (is_wp_error($response)) {
+                // API hatası olduğunda görselsiz devam et
+                error_log('Unsplash API hatası: ' . $response->get_error_message());
+                wp_send_json_error(array(
+                    'message' => 'Unsplash API hatası: ' . $response->get_error_message(), 
+                    'continue_without_image' => true
+                ), 500);
+                return;
+            }
+
+            $response_code = wp_remote_retrieve_response_code($response);
+            if ($response_code !== 200) {
+                // API limiti aşıldığında veya başka bir HTTP hatası olduğunda görselsiz devam et
+                $error_message = 'Unsplash API HTTP Hatası: ' . $response_code;
+                if ($response_code === 429) {
+                    $error_message = 'Unsplash API saatlik limit (50 istek) aşıldı. Lütfen daha sonra tekrar deneyin.';
+                }
+                error_log($error_message);
+                wp_send_json_error(array(
+                    'message' => $error_message, 
+                    'continue_without_image' => true
+                ), $response_code);
+                return;
+            }
+
+            $body = json_decode(wp_remote_retrieve_body($response), true);
+            
+            if (empty($body) || !isset($body['results']) || empty($body['results'])) {
+                // Sonuç bulunamadığında görselsiz devam et
+                wp_send_json_error(array(
+                    'message' => 'Uygun görsel bulunamadı.', 
+                    'continue_without_image' => true
+                ), 404);
+                return;
+            }
+
+            // Rastgele bir görsel seç
+            $results_count = count($body['results']);
+            $random_index = mt_rand(0, $results_count - 1);
+            $image_data = $body['results'][$random_index];
+            
+            $image_url = $image_data['urls']['regular'];
+            $image_author = $image_data['user']['name'];
+            $image_attribution = 'Photo by ' . $image_author . ' on Unsplash';
+
+            // Görseli indir ve medya kütüphanesine ekle
+            $image_id = $this->upload_image_to_media_library($image_url, $query, $image_attribution);
+
+            if (is_wp_error($image_id)) {
+                // Görsel indirme/yükleme hatası olduğunda görselsiz devam et
+                error_log('Görsel indirme hatası: ' . $image_id->get_error_message());
+                wp_send_json_error(array(
+                    'message' => 'Görsel indirme hatası: ' . $image_id->get_error_message(), 
+                    'continue_without_image' => true
+                ), 500);
+                return;
+            }
+
+            wp_send_json_success(array(
+                'image_id' => $image_id,
+                'image_url' => wp_get_attachment_url($image_id),
+                'image_attribution' => $image_attribution
+            ));
+
+        } catch (Exception $e) {
+            // Herhangi bir hata olduğunda görselsiz devam et
+            error_log('Görsel arama hatası: ' . $e->getMessage());
+            wp_send_json_error(array(
+                'message' => 'Görsel aranırken hata: ' . $e->getMessage(), 
+                'continue_without_image' => true
+            ), 500);
+        }
+    }
+
+    // Görseli indir ve medya kütüphanesine ekle
+    private function upload_image_to_media_library($image_url, $title, $description = '') {
+        require_once(ABSPATH . 'wp-admin/includes/file.php');
+        require_once(ABSPATH . 'wp-admin/includes/media.php');
+        require_once(ABSPATH . 'wp-admin/includes/image.php');
+
+        // Görseli geçici olarak indirme
+        $temp_file = download_url($image_url);
+
+        if (is_wp_error($temp_file)) {
+            return $temp_file;
+        }
+
+        // Dosya bilgilerini ayarlama
+        $file_array = array(
+            'name' => sanitize_title($title) . '.jpg',
+            'tmp_name' => $temp_file,
+            'error' => 0,
+            'size' => filesize($temp_file),
+        );
+
+        // Görseli medya kütüphanesine yükleme
+        $attachment_id = media_handle_sideload($file_array, 0, $title, array(
+            'post_excerpt' => $description,
+        ));
+
+        // Geçici dosyayı silme
+        @unlink($temp_file);
+
+        return $attachment_id;
     }
 }
 
@@ -291,4 +506,4 @@ ETİKETLER: [Buraya virgülle ayrılmış 5-10 adet anahtar kelime/etiket yaz]'
 function ai_blog_generator_init() {
     AI_Blog_Generator::get_instance();
 }
-add_action('plugins_loaded', 'ai_blog_generator_init'); 
+add_action('plugins_loaded', 'ai_blog_generator_init');
