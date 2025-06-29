@@ -55,7 +55,8 @@ class AI_Blog_Generator {
         // AJAX işleyicileri
         add_action('wp_ajax_generate_blog_content', array($this, 'generate_blog_content'));
         add_action('wp_ajax_publish_blog_post', array($this, 'publish_blog_post'));
-        add_action('wp_ajax_search_featured_image', array($this, 'search_featured_image')); // Yeni AJAX handler
+        add_action('wp_ajax_search_featured_image', array($this, 'search_featured_image'));
+        add_action('wp_ajax_upload_selected_image', array($this, 'upload_selected_image')); // Yeni AJAX işleyicisi
     }
 
     public function add_admin_menu() {
@@ -369,6 +370,9 @@ ETİKETLER: [Buraya virgülle ayrılmış 5-10 adet anahtar kelime/etiket yaz]'
         }
 
         $query = sanitize_text_field($_POST['query']);
+        $mode = isset($_POST['mode']) ? sanitize_text_field($_POST['mode']) : 'single';
+        $topic_count = isset($_POST['topic_count']) ? intval($_POST['topic_count']) : 1;
+
         if (empty($query)) {
             wp_send_json_error(array(
                 'message' => 'Arama sorgusu boş olamaz.', 
@@ -387,8 +391,11 @@ ETİKETLER: [Buraya virgülle ayrılmış 5-10 adet anahtar kelime/etiket yaz]'
         }
 
         try {
-            // Daha fazla görsel getirmek için per_page parametresini artırdık
-            $response = wp_remote_get('https://api.unsplash.com/search/photos?query=' . urlencode($query) . '&per_page=10', array(
+            // Mod ve konu sayısına göre per_page değerini belirle
+            $per_page = $mode === 'single' ? 3 : ceil($topic_count * 1.5);
+            
+            // API isteği
+            $response = wp_remote_get('https://api.unsplash.com/search/photos?query=' . urlencode($query) . '&per_page=' . $per_page, array(
                 'headers' => array(
                     'Authorization' => 'Client-ID ' . $unsplash_api_key,
                 ),
@@ -396,7 +403,6 @@ ETİKETLER: [Buraya virgülle ayrılmış 5-10 adet anahtar kelime/etiket yaz]'
             ));
 
             if (is_wp_error($response)) {
-                // API hatası olduğunda görselsiz devam et
                 error_log('Unsplash API hatası: ' . $response->get_error_message());
                 wp_send_json_error(array(
                     'message' => 'Unsplash API hatası: ' . $response->get_error_message(), 
@@ -407,7 +413,6 @@ ETİKETLER: [Buraya virgülle ayrılmış 5-10 adet anahtar kelime/etiket yaz]'
 
             $response_code = wp_remote_retrieve_response_code($response);
             if ($response_code !== 200) {
-                // API limiti aşıldığında veya başka bir HTTP hatası olduğunda görselsiz devam et
                 $error_message = 'Unsplash API HTTP Hatası: ' . $response_code;
                 if ($response_code === 429) {
                     $error_message = 'Unsplash API saatlik limit (50 istek) aşıldı. Lütfen daha sonra tekrar deneyin.';
@@ -423,7 +428,6 @@ ETİKETLER: [Buraya virgülle ayrılmış 5-10 adet anahtar kelime/etiket yaz]'
             $body = json_decode(wp_remote_retrieve_body($response), true);
             
             if (empty($body) || !isset($body['results']) || empty($body['results'])) {
-                // Sonuç bulunamadığında görselsiz devam et
                 wp_send_json_error(array(
                     'message' => 'Uygun görsel bulunamadı.', 
                     'continue_without_image' => true
@@ -431,40 +435,68 @@ ETİKETLER: [Buraya virgülle ayrılmış 5-10 adet anahtar kelime/etiket yaz]'
                 return;
             }
 
-            // Rastgele bir görsel seç
-            $results_count = count($body['results']);
-            $random_index = mt_rand(0, $results_count - 1);
-            $image_data = $body['results'][$random_index];
-            
-            $image_url = $image_data['urls']['regular'];
-            $image_author = $image_data['user']['name'];
-            $image_attribution = 'Photo by ' . $image_author . ' on Unsplash';
+            // Tüm görselleri döndür
+            $images = array();
+            foreach ($body['results'] as $image_data) {
+                $images[] = array(
+                    'url' => $image_data['urls']['regular'],
+                    'thumb' => $image_data['urls']['thumb'],
+                    'author' => $image_data['user']['name'],
+                    'attribution' => 'Photo by ' . $image_data['user']['name'] . ' on Unsplash'
+                );
+            }
 
+            wp_send_json_success(array(
+                'images' => $images,
+                'query' => $query
+            ));
+
+        } catch (Exception $e) {
+            error_log('Görsel arama hatası: ' . $e->getMessage());
+            wp_send_json_error(array(
+                'message' => 'Görsel aranırken hata: ' . $e->getMessage(), 
+                'continue_without_image' => true
+            ), 500);
+        }
+    }
+
+    // Seçilen görseli yükle
+    public function upload_selected_image() {
+        check_ajax_referer('ai_blog_generator_nonce', 'nonce');
+
+        if (!current_user_can('upload_files')) {
+            wp_send_json_error(array('message' => 'Dosya yükleme yetkiniz yok.'), 403);
+            return;
+        }
+
+        $image_url = sanitize_url($_POST['image_url']);
+        $title = sanitize_text_field($_POST['title']);
+        $description = sanitize_text_field($_POST['description']);
+
+        if (empty($image_url)) {
+            wp_send_json_error(array('message' => 'Görsel URL\'si boş olamaz.'), 400);
+            return;
+        }
+
+        try {
             // Görseli indir ve medya kütüphanesine ekle
-            $image_id = $this->upload_image_to_media_library($image_url, $query, $image_attribution);
+            $image_id = $this->upload_image_to_media_library($image_url, $title, $description);
 
             if (is_wp_error($image_id)) {
-                // Görsel indirme/yükleme hatası olduğunda görselsiz devam et
-                error_log('Görsel indirme hatası: ' . $image_id->get_error_message());
                 wp_send_json_error(array(
-                    'message' => 'Görsel indirme hatası: ' . $image_id->get_error_message(), 
-                    'continue_without_image' => true
+                    'message' => 'Görsel indirme hatası: ' . $image_id->get_error_message()
                 ), 500);
                 return;
             }
 
             wp_send_json_success(array(
                 'image_id' => $image_id,
-                'image_url' => wp_get_attachment_url($image_id),
-                'image_attribution' => $image_attribution
+                'image_url' => wp_get_attachment_url($image_id)
             ));
 
         } catch (Exception $e) {
-            // Herhangi bir hata olduğunda görselsiz devam et
-            error_log('Görsel arama hatası: ' . $e->getMessage());
             wp_send_json_error(array(
-                'message' => 'Görsel aranırken hata: ' . $e->getMessage(), 
-                'continue_without_image' => true
+                'message' => 'Görsel yüklenirken hata: ' . $e->getMessage()
             ), 500);
         }
     }
