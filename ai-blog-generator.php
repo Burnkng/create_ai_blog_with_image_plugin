@@ -1,7 +1,7 @@
 <?php
 /**
- * Plugin Name: AI Blog Generator
- * Plugin URI: https://your-website.c                        <table class="form-table">
+ * Plugin Name: AI Blog Generator With Image
+ * Plugin URI: https://www.burakbinmar.com                        <table class="form-table">
                             <tr>
                                 <th scope="row">OpenAI API Anahtarı</th>
                                 <td>
@@ -23,11 +23,11 @@
                         </table>-generator
  * Description: GPT-4.1 mini/nano kullanarak otomatik blog yazıları oluşturan WordPress eklentisi
  * Version: 1.0.0
- * Author: Your Name
- * Author URI: https://your-website.com
+ * Author: Burak Binmar
+ * Author URI: https://www.burakbinmar.com
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
- * Text Domain: ai-blog-generator
+ * Text Domain: ai-blog-generatorwithimage
  */
 
 if (!defined('ABSPATH')) {
